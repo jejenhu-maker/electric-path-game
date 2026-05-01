@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
-<title>Electric Path ⚡</title>
+<title>Electric Path ⚡ Don't Touch the Wire!</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body {
@@ -91,10 +91,10 @@ canvas { display: block; }
 
 <div id="modal">
   <h1 id="modal-title">⚡ Electric Path</h1>
-  <h2 id="modal-subtitle">指尖穿越電流迷宮</h2>
-  <div class="info" id="modal-info1">沿著軌道中間滑動，不要碰到電牆！</div>
-  <div class="info" id="modal-info2">收集道具加分，星星可以無敵</div>
-  <button id="modal-btn" onclick="startGame()">開始遊戲</button>
+  <h2 id="modal-subtitle">Don't Touch the Wire!</h2>
+  <div class="info" id="modal-info1">Slide your finger along the middle — don't hit the walls!</div>
+  <div class="info" id="modal-info2">Collect fruits for points, grab stars for invincibility!</div>
+  <button id="modal-btn" onclick="startGame()">START</button>
 </div>
 
 <script>
@@ -838,11 +838,11 @@ function winLevel() {
 
   if (level >= LEVELS) {
     // Game complete!
-    showModal('🏆 全部通關！', 'Electric Path Master',
-      `最終分數: ${score}`, `完成全部 ${LEVELS} 關！`, '再玩一次', () => startGame());
+    showModal('🏆 YOU WIN!', 'Electric Path Master',
+      `Final Score: ${score}`, `All ${LEVELS} levels cleared!`, 'PLAY AGAIN', () => startGame());
   } else {
-    showModal('⚡ 過關！', `Level ${level} Complete`,
-      `+500 通關 +${timeBonus} 時間獎勵`, `目前分數: ${score}`, '下一關', () => {
+    showModal('⚡ CLEAR!', `Level ${level} Complete`,
+      `+500 clear +${timeBonus} time bonus`, `Score: ${score}`, 'NEXT LEVEL', () => {
         level++;
         startLevel();
       });
@@ -854,8 +854,8 @@ function loseLevel() {
   if (timerInterval) clearInterval(timerInterval);
   vibrate(500);
 
-  showModal('💀 時間到！', `Level ${level} Failed`,
-    `目前分數: ${score}`, '', '重試', () => startLevel());
+  showModal('💀 TIME\'S UP!', `Level ${level} Failed`,
+    `Score: ${score}`, '', 'RETRY', () => startLevel());
 }
 
 function showModal(title, subtitle, info1, info2, btnText, btnAction) {
