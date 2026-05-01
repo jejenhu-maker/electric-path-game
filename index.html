@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+<title>Electric Path ⚡</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #0a0a1a;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+canvas { display: block; }
+#ui-overlay {
+  position: fixed; top: 0; left: 0; right: 0;
+  padding: 12px 16px;
+  display: flex; justify-content: space-between; align-items: center;
+  z-index: 10; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.6) 0%, transparent 100%);
+}
+.ui-text {
+  color: #fff; font-size: 16px; font-weight: 700;
+  text-shadow: 0 0 8px rgba(0,200,255,0.8);
+}
+#timer-text { color: #ff6b6b; }
+#modal {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+  justify-content: center; align-items: center;
+  z-index: 100;
+  background: rgba(5,5,20,0.92);
+  backdrop-filter: blur(8px);
+}
+#modal.hidden { display: none; }
+#modal h1 {
+  font-size: 36px; color: #fff;
+  text-shadow: 0 0 20px rgba(0,200,255,0.8);
+  margin-bottom: 8px;
+}
+#modal h2 {
+  font-size: 20px; color: #aaa;
+  font-weight: 400; margin-bottom: 24px;
+}
+#modal .info {
+  color: #ccc; font-size: 15px; margin-bottom: 6px;
+}
+#modal button {
+  margin-top: 20px; padding: 14px 40px;
+  font-size: 18px; font-weight: 700;
+  border: 2px solid rgba(0,200,255,0.6);
+  border-radius: 12px;
+  background: rgba(0,200,255,0.15);
+  color: #fff; cursor: pointer;
+  text-shadow: 0 0 8px rgba(0,200,255,0.6);
+  transition: all 0.2s;
+}
+#modal button:hover, #modal button:active {
+  background: rgba(0,200,255,0.3);
+  box-shadow: 0 0 20px rgba(0,200,255,0.4);
+}
+#invincible-bar {
+  position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+  width: 150px; height: 8px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.15);
+  z-index: 10; pointer-events: none;
+  display: none;
+}
+#invincible-fill {
+  height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, #ffd700, #ffaa00);
+  box-shadow: 0 0 10px rgba(255,215,0,0.6);
+  transition: width 0.1s;
+}
+</style>
+</head>
+<body>
+<div id="ui-overlay">
+  <span class="ui-text" id="level-text">LEVEL 1</span>
+  <span class="ui-text" id="score-text">0</span>
+  <span class="ui-text" id="timer-text">60s</span>
+</div>
+<div id="invincible-bar"><div id="invincible-fill"></div></div>
+<canvas id="game"></canvas>
+
+<div id="modal">
+  <h1 id="modal-title">⚡ Electric Path</h1>
+  <h2 id="modal-subtitle">指尖穿越電流迷宮</h2>
+  <div class="info" id="modal-info1">沿著軌道中間滑動，不要碰到電牆！</div>
+  <div class="info" id="modal-info2">收集道具加分，星星可以無敵</div>
+  <button id="modal-btn" onclick="startGame()">開始遊戲</button>
+</div>
+
+<script>
+// ============================================
+// CONFIG
+// ============================================
+const LEVELS = 10;
+const TIME_LIMIT = 60;
+const INVINCIBLE_DURATION = 5;
+const TRACK_COLOR_INNER = '#0066cc';
+const TRACK_COLOR_OUTER = '#00ccff';
+const TRACK_GLOW = 'rgba(0,180,255,0.4)';
+const BG_COLOR = '#0a0a1a';
+const GRID_COLOR = 'rgba(0,100,200,0.06)';
+
+// ============================================
+// CANVAS SETUP
+// ============================================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W, H, dpr;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ============================================
+// GAME STATE
+// ============================================
+let state = 'menu'; // menu, playing, paused, win, lose, gameover, complete
+let level = 1;
+let score = 0;
+let timer = TIME_LIMIT;
+let timerInterval = null;
+
+// Track
+let trackPoints = []; // center line [{x,y}]
+let trackWidth = 40;  // half-width
+let trackLength = 0;
+let items = [];       // {x, y, type, collected}
+let branches = [];    // {startIdx, points:[], width}
+
+// Player
+let playerProgress = 0;   // 0..1 along the track
+let playerPos = { x: 0, y: 0 };
+let isDragging = false;
+let isInvincible = false;
+let invincibleTimer = 0;
+let shockTimer = 0;
+let shockPos = null;
+
+// Camera
+let camera = { x: 0, y: 0 };
+
+// Particles
+let particles = [];
+
+// ============================================
+// TRACK GENERATION
+// ============================================
+function generateTrack(lvl) {
+  const pts = [];
+  const segCount = 30 + lvl * 8;
+  const segLen = 35 + Math.random() * 10;
+  const maxCurve = 0.3 + lvl * 0.08;
+  let x = 0, y = 0, angle = -Math.PI / 2; // going up
+
+  pts.push({ x, y });
+
+  for (let i = 0; i < segCount; i++) {
+    // Random curve
+    const curve = (Math.random() - 0.5) * 2 * maxCurve;
+    angle += curve;
+    // Clamp to mostly upward
+    angle = Math.max(-Math.PI * 0.85, Math.min(-Math.PI * 0.15, angle));
+    x += Math.cos(angle) * segLen;
+    y += Math.sin(angle) * segLen;
+    pts.push({ x, y });
+  }
+
+  // Smooth the path (Chaikin subdivision x2)
+  let smooth = pts;
+  for (let iter = 0; iter < 2; iter++) {
+    const next = [smooth[0]];
+    for (let i = 0; i < smooth.length - 1; i++) {
+      const p0 = smooth[i], p1 = smooth[i + 1];
+      next.push({ x: p0.x * 0.75 + p1.x * 0.25, y: p0.y * 0.75 + p1.y * 0.25 });
+      next.push({ x: p0.x * 0.25 + p1.x * 0.75, y: p0.y * 0.25 + p1.y * 0.75 });
+    }
+    next.push(smooth[smooth.length - 1]);
+    smooth = next;
+  }
+
+  trackPoints = smooth;
+
+  // Track width decreases with level
+  trackWidth = Math.max(16, 42 - lvl * 2.5);
+
+  // Calculate total path length
+  trackLength = 0;
+  for (let i = 1; i < trackPoints.length; i++) {
+    const dx = trackPoints[i].x - trackPoints[i-1].x;
+    const dy = trackPoints[i].y - trackPoints[i-1].y;
+    trackLength += Math.sqrt(dx * dx + dy * dy);
+  }
+
+  // Generate items
+  items = [];
+  const itemCount = 5 + lvl;
+  for (let i = 0; i < itemCount; i++) {
+    const t = 0.1 + Math.random() * 0.8;
+    const pos = getPointAlongTrack(t);
+    const types = ['strawberry', 'strawberry', 'banana', 'banana'];
+    if (Math.random() < 0.15 + lvl * 0.02) types.push('star');
+    items.push({
+      x: pos.x + (Math.random() - 0.5) * trackWidth * 0.5,
+      y: pos.y + (Math.random() - 0.5) * trackWidth * 0.5,
+      type: types[Math.floor(Math.random() * types.length)],
+      collected: false
+    });
+  }
+
+  // Generate branch traps for lvl >= 7
+  branches = [];
+  if (lvl >= 7) {
+    const branchCount = lvl >= 9 ? 3 : lvl >= 8 ? 2 : 1;
+    for (let b = 0; b < branchCount; b++) {
+      const t = 0.25 + (b / branchCount) * 0.5;
+      const idx = Math.floor(t * (trackPoints.length - 1));
+      const base = trackPoints[idx];
+      const next = trackPoints[Math.min(idx + 1, trackPoints.length - 1)];
+      const angle = Math.atan2(next.y - base.y, next.x - base.x);
+      // Branch goes perpendicular then curves into dead end
+      const side = Math.random() < 0.5 ? 1 : -1;
+      const bAngle = angle + side * Math.PI * 0.4;
+      const bPts = [{ x: base.x, y: base.y }];
+      let bx = base.x, by = base.y, ba = bAngle;
+      const bLen = 3 + Math.floor(Math.random() * 4);
+      for (let j = 0; j < bLen; j++) {
+        ba += (Math.random() - 0.5) * 0.5;
+        bx += Math.cos(ba) * 40;
+        by += Math.sin(ba) * 40;
+        bPts.push({ x: bx, y: by });
+      }
+      branches.push({ startIdx: idx, points: bPts, width: trackWidth * 0.9 });
+    }
+  }
+}
+
+function getPointAlongTrack(t) {
+  t = Math.max(0, Math.min(1, t));
+  const totalLen = trackLength;
+  let targetDist = t * totalLen;
+  let dist = 0;
+  for (let i = 1; i < trackPoints.length; i++) {
+    const dx = trackPoints[i].x - trackPoints[i-1].x;
+    const dy = trackPoints[i].y - trackPoints[i-1].y;
+    const segLen = Math.sqrt(dx * dx + dy * dy);
+    if (dist + segLen >= targetDist) {
+      const frac = (targetDist - dist) / segLen;
+      return {
+        x: trackPoints[i-1].x + dx * frac,
+        y: trackPoints[i-1].y + dy * frac
+      };
+    }
+    dist += segLen;
+  }
+  return { ...trackPoints[trackPoints.length - 1] };
+}
+
+function getTrackProgress(worldX, worldY) {
+  let minDist = Infinity;
+  let bestIdx = 0;
+  for (let i = 0; i < trackPoints.length; i++) {
+    const dx = trackPoints[i].x - worldX;
+    const dy = trackPoints[i].y - worldY;
+    const d = dx * dx + dy * dy;
+    if (d < minDist) { minDist = d; bestIdx = i; }
+  }
+  return bestIdx / (trackPoints.length - 1);
+}
+
+function distToTrackCenter(worldX, worldY) {
+  let minDist = Infinity;
+  for (let i = 0; i < trackPoints.length; i++) {
+    const dx = trackPoints[i].x - worldX;
+    const dy = trackPoints[i].y - worldY;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < minDist) minDist = d;
+  }
+  // Also check branches
+  for (const br of branches) {
+    for (const p of br.points) {
+      const dx = p.x - worldX;
+      const dy = p.y - worldY;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < minDist) minDist = d;
+    }
+  }
+  return minDist;
+}
+
+function isInsideTrack(worldX, worldY) {
+  // Check main track
+  for (let i = 0; i < trackPoints.length - 1; i++) {
+    const p = trackPoints[i], q = trackPoints[i + 1];
+    const d = distToSegment(worldX, worldY, p.x, p.y, q.x, q.y);
+    if (d < trackWidth) return true;
+  }
+  // Check branches
+  for (const br of branches) {
+    for (let i = 0; i < br.points.length - 1; i++) {
+      const p = br.points[i], q = br.points[i + 1];
+      const d = distToSegment(worldX, worldY, p.x, p.y, q.x, q.y);
+      if (d < br.width) return true;
+    }
+  }
+  return false;
+}
+
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.sqrt((px - ax) ** 2 + (py - ay) ** 2);
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const projX = ax + t * dx, projY = ay + t * dy;
+  return Math.sqrt((px - projX) ** 2 + (py - projY) ** 2);
+}
+
+// ============================================
+// RENDERING
+// ============================================
+function drawTrackSegment(points, width, alpha = 1) {
+  if (points.length < 2) return;
+
+  // Glow layer
+  ctx.save();
+  ctx.globalAlpha = 0.3 * alpha;
+  ctx.lineWidth = width * 2 + 12;
+  ctx.strokeStyle = TRACK_GLOW;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(points[0].x - camera.x, points[0].y - camera.y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x - camera.x, points[i].y - camera.y);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // Track floor (dark)
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = width * 2;
+  ctx.strokeStyle = '#0d1a2e';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(points[0].x - camera.x, points[0].y - camera.y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x - camera.x, points[i].y - camera.y);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // Wall lines (left and right edges)
+  const leftWall = [], rightWall = [];
+  for (let i = 0; i < points.length; i++) {
+    let dx, dy;
+    if (i === 0) {
+      dx = points[1].x - points[0].x;
+      dy = points[1].y - points[0].y;
+    } else if (i === points.length - 1) {
+      dx = points[i].x - points[i-1].x;
+      dy = points[i].y - points[i-1].y;
+    } else {
+      dx = points[i+1].x - points[i-1].x;
+      dy = points[i+1].y - points[i-1].y;
+    }
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const nx = -dy / len, ny = dx / len;
+    leftWall.push({ x: points[i].x + nx * width, y: points[i].y + ny * width });
+    rightWall.push({ x: points[i].x - nx * width, y: points[i].y - ny * width });
+  }
+
+  // Draw walls with electric effect
+  const time = Date.now() / 1000;
+  for (const wall of [leftWall, rightWall]) {
+    // Outer glow
+    ctx.save();
+    ctx.globalAlpha = 0.5 * alpha;
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = TRACK_COLOR_OUTER;
+    ctx.shadowColor = TRACK_COLOR_OUTER;
+    ctx.shadowBlur = 15;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(wall[0].x - camera.x, wall[0].y - camera.y);
+    for (let i = 1; i < wall.length; i++) {
+      // Add electric jitter
+      const jitter = Math.sin(time * 20 + i * 0.5) * 1.5;
+      ctx.lineTo(wall[i].x - camera.x + jitter, wall[i].y - camera.y + jitter);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // Core line
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = TRACK_COLOR_OUTER;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(wall[0].x - camera.x, wall[0].y - camera.y);
+    for (let i = 1; i < wall.length; i++) {
+      ctx.lineTo(wall[i].x - camera.x, wall[i].y - camera.y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawItems() {
+  for (const item of items) {
+    if (item.collected) continue;
+    const sx = item.x - camera.x;
+    const sy = item.y - camera.y;
+    if (sx < -50 || sx > W + 50 || sy < -50 || sy > H + 50) continue;
+
+    const bob = Math.sin(Date.now() / 400 + item.x) * 3;
+    ctx.save();
+    ctx.font = '24px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Glow
+    ctx.shadowColor = item.type === 'star' ? '#ffd700' :
+                      item.type === 'banana' ? '#ffcc00' : '#ff4444';
+    ctx.shadowBlur = 12;
+
+    const emoji = item.type === 'strawberry' ? '🍓' :
+                  item.type === 'banana' ? '🍌' : '⭐';
+    ctx.fillText(emoji, sx, sy + bob);
+    ctx.restore();
+  }
+}
+
+function drawStartEnd() {
+  const start = trackPoints[0];
+  const end = trackPoints[trackPoints.length - 1];
+
+  // Start zone
+  const sx = start.x - camera.x, sy = start.y - camera.y;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(sx, sy, trackWidth + 5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,255,100,0.1)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,255,100,0.6)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = '#0f0';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('START', sx, sy - trackWidth - 12);
+  ctx.restore();
+
+  // End zone
+  const ex = end.x - camera.x, ey = end.y - camera.y;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(ex, ey, trackWidth + 5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,215,0,0.1)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,215,0,0.6)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('GOAL', ex, ey - trackWidth - 12);
+  ctx.restore();
+}
+
+function drawPlayer() {
+  const px = playerPos.x - camera.x;
+  const py = playerPos.y - camera.y;
+
+  // Trail glow
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(px, py, 10, 0, Math.PI * 2);
+  ctx.fillStyle = isInvincible ? 'rgba(255,215,0,0.3)' : 'rgba(255,255,255,0.15)';
+  ctx.shadowColor = isInvincible ? '#ffd700' : '#ffffff';
+  ctx.shadowBlur = 20;
+  ctx.fill();
+  ctx.restore();
+
+  // Core
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(px, py, 6, 0, Math.PI * 2);
+  const gradient = ctx.createRadialGradient(px, py, 0, px, py, 6);
+  if (isInvincible) {
+    gradient.addColorStop(0, '#fff');
+    gradient.addColorStop(1, '#ffd700');
+  } else {
+    gradient.addColorStop(0, '#fff');
+    gradient.addColorStop(1, '#88ccff');
+  }
+  ctx.fillStyle = gradient;
+  ctx.shadowColor = isInvincible ? '#ffd700' : '#00ccff';
+  ctx.shadowBlur = 15;
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawShock() {
+  if (shockTimer <= 0 || !shockPos) return;
+  const sx = shockPos.x - camera.x;
+  const sy = shockPos.y - camera.y;
+  const alpha = shockTimer;
+
+  // Electric sparks
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  for (let i = 0; i < 8; i++) {
+    const angle = (Math.PI * 2 / 8) * i + Date.now() / 200;
+    const len = 15 + Math.random() * 20;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    const mx = sx + Math.cos(angle) * len * 0.5 + (Math.random() - 0.5) * 10;
+    const my = sy + Math.sin(angle) * len * 0.5 + (Math.random() - 0.5) * 10;
+    ctx.lineTo(mx, my);
+    ctx.lineTo(sx + Math.cos(angle) * len, sy + Math.sin(angle) * len);
+    ctx.strokeStyle = '#00ccff';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#00ccff';
+    ctx.shadowBlur = 10;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life -= 0.02;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    ctx.beginPath();
+    ctx.arc(p.x - camera.x, p.y - camera.y, p.size, 0, Math.PI * 2);
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 8;
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 3;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      size: 2 + Math.random() * 3,
+      color,
+      life: 0.5 + Math.random() * 0.5
+    });
+  }
+}
+
+function drawGrid() {
+  ctx.save();
+  ctx.strokeStyle = GRID_COLOR;
+  ctx.lineWidth = 1;
+  const gridSize = 60;
+  const ox = -camera.x % gridSize;
+  const oy = -camera.y % gridSize;
+  for (let x = ox; x < W; x += gridSize) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = oy; y < H; y += gridSize) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ============================================
+// GAME LOOP
+// ============================================
+let lastTime = 0;
+function gameLoop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+  lastTime = timestamp;
+
+  // Update
+  if (state === 'playing') {
+    // Camera smooth follow
+    camera.x += (playerPos.x - W / 2 - camera.x) * 0.1;
+    camera.y += (playerPos.y - H / 2 - camera.y) * 0.1;
+
+    // Invincible timer
+    if (isInvincible) {
+      invincibleTimer -= dt;
+      if (invincibleTimer <= 0) {
+        isInvincible = false;
+        invincibleTimer = 0;
+      }
+      document.getElementById('invincible-bar').style.display = 'block';
+      document.getElementById('invincible-fill').style.width =
+        (invincibleTimer / INVINCIBLE_DURATION * 100) + '%';
+    } else {
+      document.getElementById('invincible-bar').style.display = 'none';
+    }
+
+    // Shock animation
+    if (shockTimer > 0) shockTimer -= dt * 2;
+
+    // Check item collection
+    for (const item of items) {
+      if (item.collected) continue;
+      const dx = item.x - playerPos.x;
+      const dy = item.y - playerPos.y;
+      if (Math.sqrt(dx * dx + dy * dy) < 20) {
+        item.collected = true;
+        if (item.type === 'strawberry') {
+          score += 100;
+          spawnParticles(item.x, item.y, '#ff4444', 8);
+        } else if (item.type === 'banana') {
+          score += 200;
+          spawnParticles(item.x, item.y, '#ffcc00', 10);
+        } else if (item.type === 'star') {
+          isInvincible = true;
+          invincibleTimer = INVINCIBLE_DURATION;
+          spawnParticles(item.x, item.y, '#ffd700', 15);
+          vibrate(100);
+        }
+        document.getElementById('score-text').textContent = score;
+      }
+    }
+
+    // Check win condition
+    const endPt = trackPoints[trackPoints.length - 1];
+    const dEnd = Math.sqrt((playerPos.x - endPt.x) ** 2 + (playerPos.y - endPt.y) ** 2);
+    if (dEnd < trackWidth + 10) {
+      winLevel();
+    }
+  }
+
+  // Render
+  ctx.fillStyle = BG_COLOR;
+  ctx.fillRect(0, 0, W, H);
+
+  if (state !== 'menu') {
+    drawGrid();
+    drawTrackSegment(trackPoints, trackWidth);
+    for (const br of branches) {
+      drawTrackSegment(br.points, br.width, 0.7);
+    }
+    drawStartEnd();
+    drawItems();
+    drawParticles();
+    if (state === 'playing') {
+      drawPlayer();
+      drawShock();
+    }
+  }
+
+  // Screen flash on shock
+  if (shockTimer > 0.5) {
+    ctx.save();
+    ctx.globalAlpha = (shockTimer - 0.5) * 0.4;
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+
+  // Invincible screen tint
+  if (isInvincible) {
+    ctx.save();
+    ctx.globalAlpha = 0.05 + Math.sin(Date.now() / 200) * 0.03;
+    ctx.fillStyle = '#ffd700';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+// ============================================
+// INPUT
+// ============================================
+function screenToWorld(sx, sy) {
+  return { x: sx + camera.x, y: sy + camera.y };
+}
+
+function handlePointerDown(sx, sy) {
+  if (state !== 'playing') return;
+  const world = screenToWorld(sx, sy);
+  // Must start near the track
+  if (isInsideTrack(world.x, world.y)) {
+    isDragging = true;
+    playerPos.x = world.x;
+    playerPos.y = world.y;
+    playerProgress = getTrackProgress(world.x, world.y);
+  }
+}
+
+function handlePointerMove(sx, sy) {
+  if (state !== 'playing' || !isDragging) return;
+  const world = screenToWorld(sx, sy);
+  playerPos.x = world.x;
+  playerPos.y = world.y;
+  playerProgress = getTrackProgress(world.x, world.y);
+
+  // Check if outside track
+  if (!isInsideTrack(world.x, world.y) && !isInvincible) {
+    // SHOCK!
+    shockTimer = 1;
+    shockPos = { x: world.x, y: world.y };
+    isDragging = false;
+    vibrate(300);
+    spawnParticles(world.x, world.y, '#00ccff', 20);
+
+    // Reset player to start
+    const start = trackPoints[0];
+    playerPos.x = start.x;
+    playerPos.y = start.y;
+    playerProgress = 0;
+  }
+}
+
+function handlePointerUp() {
+  isDragging = false;
+}
+
+// Touch events
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  handlePointerDown(t.clientX, t.clientY);
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  handlePointerMove(t.clientX, t.clientY);
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  handlePointerUp();
+}, { passive: false });
+
+// Mouse events (desktop fallback)
+canvas.addEventListener('mousedown', e => handlePointerDown(e.clientX, e.clientY));
+canvas.addEventListener('mousemove', e => { if (e.buttons) handlePointerMove(e.clientX, e.clientY); });
+canvas.addEventListener('mouseup', () => handlePointerUp());
+
+// ============================================
+// VIBRATION
+// ============================================
+function vibrate(ms) {
+  if (navigator.vibrate) navigator.vibrate(ms);
+}
+
+// ============================================
+// GAME FLOW
+// ============================================
+function startGame() {
+  level = 1;
+  score = 0;
+  document.getElementById('score-text').textContent = '0';
+  startLevel();
+}
+
+function startLevel() {
+  generateTrack(level);
+  const start = trackPoints[0];
+  playerPos = { x: start.x, y: start.y };
+  playerProgress = 0;
+  camera = { x: start.x - W / 2, y: start.y - H / 2 };
+  isDragging = false;
+  isInvincible = false;
+  invincibleTimer = 0;
+  shockTimer = 0;
+  timer = TIME_LIMIT;
+  particles = [];
+
+  document.getElementById('level-text').textContent = `LEVEL ${level}`;
+  document.getElementById('timer-text').textContent = `${TIME_LIMIT}s`;
+  document.getElementById('modal').classList.add('hidden');
+  state = 'playing';
+
+  // Start timer
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    if (state !== 'playing') return;
+    timer--;
+    document.getElementById('timer-text').textContent = `${timer}s`;
+    if (timer <= 10) {
+      document.getElementById('timer-text').style.color = '#ff3333';
+      document.getElementById('timer-text').style.textShadow = '0 0 10px rgba(255,0,0,0.8)';
+    } else {
+      document.getElementById('timer-text').style.color = '#ff6b6b';
+      document.getElementById('timer-text').style.textShadow = '0 0 8px rgba(0,200,255,0.8)';
+    }
+    if (timer <= 0) {
+      loseLevel();
+    }
+  }, 1000);
+}
+
+function winLevel() {
+  state = 'win';
+  if (timerInterval) clearInterval(timerInterval);
+  // Time bonus
+  const timeBonus = timer * 10;
+  score += 500 + timeBonus;
+  document.getElementById('score-text').textContent = score;
+  vibrate(50);
+
+  if (level >= LEVELS) {
+    // Game complete!
+    showModal('🏆 全部通關！', 'Electric Path Master',
+      `最終分數: ${score}`, `完成全部 ${LEVELS} 關！`, '再玩一次', () => startGame());
+  } else {
+    showModal('⚡ 過關！', `Level ${level} Complete`,
+      `+500 通關 +${timeBonus} 時間獎勵`, `目前分數: ${score}`, '下一關', () => {
+        level++;
+        startLevel();
+      });
+  }
+}
+
+function loseLevel() {
+  state = 'lose';
+  if (timerInterval) clearInterval(timerInterval);
+  vibrate(500);
+
+  showModal('💀 時間到！', `Level ${level} Failed`,
+    `目前分數: ${score}`, '', '重試', () => startLevel());
+}
+
+function showModal(title, subtitle, info1, info2, btnText, btnAction) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-subtitle').textContent = subtitle;
+  document.getElementById('modal-info1').textContent = info1;
+  document.getElementById('modal-info2').textContent = info2;
+  const btn = document.getElementById('modal-btn');
+  btn.textContent = btnText;
+  btn.onclick = btnAction;
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+// ============================================
+// INIT
+// ============================================
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
